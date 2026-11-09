@@ -60,6 +60,9 @@ on a 5XX alarm or failing tasks (circuit breaker).
 
 - Push → `1.0.1` built, pushed, tagged and live with no manual step (App 1.0.0 / Image 1.0.1).
 - PR #1 (`VERSION` 1.0.0 → 3.0.0) blocked by the guard; release job skipped.
+- Rollback workflow with `version=1.0.0` → live page back to App 1.0.0 / Image 1.0.0 (no rebuild).
+- App bump `VERSION` 1.0.0 → 1.1.0 → release `1.0.2` → live page App 1.1.0 / Image 1.0.2:
+  the app version comes from `app/VERSION`, the image version from git tags — independent.
 
 ## Known gaps (next steps)
 
