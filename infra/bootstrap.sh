@@ -4,7 +4,9 @@
 set -euo pipefail
 
 export AWS_REGION=eu-west-2
-GITHUB_REPO=mosheilan942/mentee-interview
+# Immutable OIDC subject (owner@id/repo@id): a deleted and re-created repo with the same name gets new IDs
+# Source: gh api repos/mosheilan942/mentee-interview/actions/oidc/customization/sub
+GITHUB_SUB_PREFIX=repo:mosheilan942@125310042/mentee-interview@1451141118
 ECR_REPO=mentee-interview
 SERVICE_NAME=hello-world
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
@@ -36,15 +38,17 @@ create_role "$INFRA_ROLE" '{"Version":"2012-10-17","Statement":[{"Effect":"Allow
   arn:aws:iam::aws:policy/service-role/AmazonECSInfrastructureRoleforExpressGatewayServices
 
 # --- GitHub Actions: only the main branch of this repo can assume the deployer role
-create_role "$GHA_ROLE" "$(cat <<EOF
+GHA_TRUST=$(cat <<EOF
 {"Version":"2012-10-17","Statement":[{"Effect":"Allow",
   "Principal":{"Federated":"arn:aws:iam::${ACCOUNT_ID}:oidc-provider/token.actions.githubusercontent.com"},
   "Action":"sts:AssumeRoleWithWebIdentity",
   "Condition":{"StringEquals":{
     "token.actions.githubusercontent.com:aud":"sts.amazonaws.com",
-    "token.actions.githubusercontent.com:sub":"repo:${GITHUB_REPO}:ref:refs/heads/main"}}}]}
+    "token.actions.githubusercontent.com:sub":"${GITHUB_SUB_PREFIX}:ref:refs/heads/main"}}}]}
 EOF
-)"
+)
+create_role "$GHA_ROLE" "$GHA_TRUST"
+aws iam update-assume-role-policy --role-name "$GHA_ROLE" --policy-document "$GHA_TRUST"
 
 aws iam put-role-policy --role-name "$GHA_ROLE" --policy-name deploy --policy-document "$(cat <<EOF
 {"Version":"2012-10-17","Statement":[
@@ -54,6 +58,10 @@ aws iam put-role-policy --role-name "$GHA_ROLE" --policy-name deploy --policy-do
    "Resource":"arn:aws:ecr:${AWS_REGION}:${ACCOUNT_ID}:repository/${ECR_REPO}"},
   {"Effect":"Allow","Action":["ecs:UpdateExpressGatewayService","ecs:DescribeExpressGatewayService","ecs:DescribeServices"],
    "Resource":"arn:aws:ecs:${AWS_REGION}:${ACCOUNT_ID}:service/default/${SERVICE_NAME}"},
+  {"Effect":"Allow","Action":"ecs:UpdateService",
+   "Resource":"arn:aws:ecs:${AWS_REGION}:${ACCOUNT_ID}:service/default/${SERVICE_NAME}"},
+  {"Effect":"Allow","Action":"ecs:RegisterTaskDefinition",
+   "Resource":"arn:aws:ecs:${AWS_REGION}:${ACCOUNT_ID}:task-definition/default-${SERVICE_NAME}:*"},
   {"Effect":"Allow","Action":"iam:PassRole","Resource":"arn:aws:iam::${ACCOUNT_ID}:role/${EXEC_ROLE}"}]}
 EOF
 )"

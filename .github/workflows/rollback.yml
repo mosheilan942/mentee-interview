@@ -1,0 +1,49 @@
+name: rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Existing image version to run again, e.g. 1.0.3"
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+# Same group as release: a rollback and a release never run at the same time
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-west-2
+  AWS_ACCOUNT_ID: "030454160336"
+  ECR_REPOSITORY: mentee-interview
+  SERVICE_NAME: hello-world
+
+jobs:
+  rollback:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate input
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Not MAJOR.MINOR.PATCH: $VERSION"; exit 1; }
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/exam-hello-gha-deployer
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Redeploy existing image (no rebuild)
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$VERSION" >/dev/null
+          IMAGE="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$VERSION"
+          aws ecs update-express-gateway-service \
+            --service-arn "arn:aws:ecs:$AWS_REGION:$AWS_ACCOUNT_ID:service/default/$SERVICE_NAME" \
+            --primary-container "{\"image\":\"$IMAGE\",\"containerPort\":8080}"
+          aws ecs wait services-stable --cluster default --services "$SERVICE_NAME"
