@@ -1,0 +1,13 @@
+# Decisions
+
+| # | Date | Decision | Chosen | Reason | Rejected |
+|---|------|----------|--------|--------|----------|
+| 1 | 2026-11-09 | Where the container runs in AWS | ECS Express Mode (Fargate underneath) | Fastest path to a live HTTPS URL; underlying ECS/ALB/Fargate resources stay visible and editable | Classic ECS Fargate + own ALB (+25 min, HTTP only without a domain); EKS + Argo CD (too heavy for the time box); App Runner (closed to new customers since 2026-04-30) |
+| 2 | 2026-11-09 | How versions are created | Two versions: app version in a `VERSION` file (developer bumps it in the PR); image version patch-bumped by CI from git tags, plus a git SHA tag | An image changes for more reasons than app code (base image, deps, Dockerfile); truly answers "two components" | One shared version (two components becomes a formality); semantic-release/release-please (extra dependency; release PR is a manual step) |
+| 3 | 2026-11-09 | Web server | Flask + gunicorn (pinned) | Standard production WSGI server, 2 deps | stdlib `http.server` (docs: not for production); FastAPI + uvicorn (more deps) |
+| 4 | 2026-11-09 | Base image | `python:3.14-slim`, multi-stage, non-root, pinned by digest | Small, safe, easy to debug | distroless (no shell, harder to debug); alpine (musl breaks some wheels) |
+| 5 | 2026-11-09 | Exposure | Public HTTPS URL; only the ALB is public; tasks accept traffic only from the ALB; least-privilege roles; non-root; no SSH | Landing page is for all users | IP allow-list (blocks users); private only (unreachable) |
+| 6 | 2026-11-09 | Infra creation now | `infra/bootstrap.sh` (AWS CLI), Terraform later if time | IaC is lowest priority; script is still repeatable | Terraform now (riskier on a new resource type) |
+| 7 | 2026-11-09 | Repo | `mosheilan942/mentee-interview` (public, created by user), `CLAUDE.md` included | Shows the AI workflow; no secrets in it | — |
+| 8 | 2026-11-09 | Protect app version from human error | CI guard (Python) before build: VERSION must be valid X.Y.Z, must be bumped if app code changed, and must be a valid next step from VERSION at the last image tag. Runs on PRs too | Human decides meaning, CI enforces rules; no extra tags | Version from commit messages (moves the error to commit prefixes); auto patch only (version loses meaning) |
+| 9 | 2026-11-09 | Pipeline trigger | push to `main` = full release; `pull_request` = test + guard only (no AWS); manual run = rollback; `*.md`-only changes don't release | Meets "no manual step"; only reviewed code on `main` can get AWS credentials (OIDC trust scoped to `refs/heads/main`) | Release on manual tag (manual step); deploy from any branch (unreviewed code reaches prod) |
