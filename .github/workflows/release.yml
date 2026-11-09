@@ -1,0 +1,92 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md"]
+  pull_request:
+    paths-ignore: ["**.md"]
+
+permissions:
+  contents: read
+
+# One release at a time, so two pushes can never compute the same image version
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-west-2
+  AWS_ACCOUNT_ID: "030454160336"
+  ECR_REPOSITORY: mentee-interview
+  SERVICE_NAME: hello-world
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the version guard needs history and tags
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - run: pip install -r app/requirements-dev.txt
+      - run: pytest -q app scripts
+      - run: python scripts/check_version.py
+
+  release:
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # push the image-v* git tag
+      id-token: write # GitHub OIDC -> AWS role, no stored keys
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Compute next image version
+        id: version
+        run: |
+          last=$(git tag -l 'image-v*' --sort=-v:refname | head -n1)
+          if [ -z "$last" ]; then
+            next=1.0.0
+          else
+            IFS=. read -r major minor patch <<< "${last#image-v}"
+            next="$major.$minor.$((patch + 1))"
+          fi
+          echo "Last: ${last:-none} -> next: $next"
+          echo "value=$next" >> "$GITHUB_OUTPUT"
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/exam-hello-gha-deployer
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+        id: ecr
+
+      - name: Build and push image
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+          IMAGE: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}
+        run: |
+          docker build --build-arg IMAGE_VERSION="$VERSION" -t "$IMAGE:$VERSION" -t "$IMAGE:$GITHUB_SHA" .
+          docker push "$IMAGE:$VERSION"
+          docker push "$IMAGE:$GITHUB_SHA"
+
+      - name: Record version in git (tag exists <=> image exists)
+        run: |
+          git tag "image-v${{ steps.version.outputs.value }}"
+          git push origin "image-v${{ steps.version.outputs.value }}"
+
+      - name: Deploy to ECS Express
+        env:
+          IMAGE: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.version.outputs.value }}
+        run: |
+          aws ecs update-express-gateway-service \
+            --service-arn "arn:aws:ecs:$AWS_REGION:$AWS_ACCOUNT_ID:service/default/$SERVICE_NAME" \
+            --primary-container "{\"image\":\"$IMAGE\",\"containerPort\":8080}"
+          aws ecs wait services-stable --cluster default --services "$SERVICE_NAME"
